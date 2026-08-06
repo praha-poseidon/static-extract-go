@@ -1,0 +1,12 @@
+rule "net/http HandleFunc inbound"
+endpoint HTTP inbound
+
+find call HandleFunc
+
+let path =
+  from argument 0 take value
+
+build {
+  httpMethod: "ANY"
+  path: path
+}
