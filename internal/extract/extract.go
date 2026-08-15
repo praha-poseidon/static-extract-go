@@ -11,6 +11,8 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
+// packages import kept for Request.Packages type
+
 type Fact struct {
 	Rule             string            `json:"rule"`
 	FactType         string            `json:"factType"`
@@ -25,6 +27,7 @@ type Fact struct {
 
 type Request struct {
 	ProjectRoot    string
+	ProjectName    string // optional; default basename of ProjectRoot
 	Patterns       []string
 	RuleSources    []string
 	Packages       []*packages.Package
@@ -50,6 +53,7 @@ func Run(req Request) ([]Fact, error) {
 			root = a
 		}
 	}
+	projectName := ProjectNameFromRoot(req.ProjectName, root)
 
 	pkgs := req.Packages
 	if len(pkgs) == 0 {
@@ -60,6 +64,7 @@ func Run(req Request) ([]Fact, error) {
 		}
 	}
 
+	uriIndexByKey := map[string]int{}
 	var facts []Fact
 	for _, rule := range rules {
 		for _, a := range find.FindAnchors(pkgs, rule.Find) {
@@ -86,6 +91,42 @@ func Run(req Request) ([]Fact, error) {
 				classifiers["category"] = rule.EndpointType
 				classifiers["direction"] = rule.EndpointDirection
 			}
+			// Default direction into fields when SER build omitted it.
+			if fields["direction"] == "" && classifiers["direction"] != "" {
+				fields["direction"] = classifiers["direction"]
+			}
+			enclosing := enclosingFuncName(a.File, a.Node.Pos())
+			// Declaration anchors: identity encloses the declared method itself (Java-like).
+			if a.Kind == "method" || a.Kind == "func" {
+				if a.RecvType != "" {
+					enclosing = a.RecvType + "." + a.Name
+				} else {
+					enclosing = a.Name
+				}
+			}
+			// Identity dict: key = {importPath}.{Recv?}.{Func}()
+			callLabel := CallSiteLabel(a.Name, a.RecvType)
+			importPath := "unknown"
+			if a.Pkg != nil {
+				if a.Pkg.PkgPath != "" {
+					importPath = a.Pkg.PkgPath
+				} else if a.Pkg.Types != nil && a.Pkg.Types.Path() != "" {
+					importPath = a.Pkg.Types.Path()
+				} else if a.Pkg.Name != "" {
+					importPath = a.Pkg.Name
+				}
+			}
+			ext := req.ExternalValues
+			if len(rule.IdentityDict) > 0 {
+				// SER-embedded dict takes precedence for this rule
+				table := map[string][]string{}
+				for k, v := range rule.IdentityDict {
+					table[k] = []string{v}
+				}
+				ext = map[string]map[string][]string{IdentityNS: table}
+			}
+			ApplyPathDictWithRule(fields, classifiers, projectName, importPath, enclosing, callLabel, rule.Name, ext, uriIndexByKey)
+
 			facts = append(facts, Fact{
 				Rule:             rule.Name,
 				FactType:         rule.FactType,
@@ -95,6 +136,7 @@ func Run(req Request) ([]Fact, error) {
 				AbsoluteFilePath: abs,
 				StartLine:        pos.Line,
 				EndLine:          end.Line,
+				EnclosingSymbol:  enclosing,
 			})
 		}
 	}
@@ -128,64 +170,4 @@ func base(s string) string {
 	return s
 }
 
-func evalBuild(rule *ser.Rule, a find.Anchor) map[string]string {
-	lets := map[string]string{}
-	for _, let := range rule.Lets {
-		val := ""
-		for _, src := range let.Sources {
-			val = evalSource(a, src)
-			if val != "" {
-				break
-			}
-		}
-		if val == "" {
-			val = let.Fallback
-		}
-		lets[let.Name] = val
-	}
-	out := map[string]string{}
-	for k, expr := range rule.Build {
-		if expr.Const != "" {
-			out[k] = expr.Const
-			continue
-		}
-		if v, ok := lets[expr.Ref]; ok {
-			out[k] = v
-		} else {
-			out[k] = expr.Ref
-		}
-	}
-	return out
-}
-
-func evalSource(a find.Anchor, src ser.Source) string {
-	from, take := src.From, src.Take
-	if len(from) >= 1 && (from[0] == "argument" || from[0] == "arg") {
-		idx := 0
-		if len(from) >= 2 {
-			s := strings.Trim(from[1], "[]")
-			n := 0
-			ok := true
-			for _, r := range s {
-				if r < '0' || r > '9' {
-					ok = false
-					break
-				}
-				n = n*10 + int(r-'0')
-			}
-			if ok {
-				idx = n
-			}
-		}
-		if len(take) == 0 || take[0] == "value" {
-			return find.ArgString(a, idx)
-		}
-	}
-	if len(from) >= 1 && from[0] == "call" && len(take) > 0 && take[0] == "name" {
-		return a.Name
-	}
-	if len(from) >= 2 && from[0] == "literal" {
-		return strings.Trim(from[1], `"`)
-	}
-	return ""
-}
+// evalBuild / evalSource → eval.go
