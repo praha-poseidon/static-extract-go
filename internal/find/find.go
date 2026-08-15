@@ -56,13 +56,36 @@ func FindAnchors(pkgs []*packages.Package, findAtoms []string) []Anchor {
 						out = append(out, Anchor{Pkg: pkg, File: file, Node: fd, Kind: "func", Name: fd.Name.Name})
 					}
 				case "method":
-					fd, ok := n.(*ast.FuncDecl)
-					if !ok || fd.Recv == nil {
-						return true
+					// 1) Methods with receiver (class methods) — FuncDecl
+					if fd, ok := n.(*ast.FuncDecl); ok && fd.Recv != nil {
+						recv := recvTypeName(fd, pkg.TypesInfo)
+						if matchName(rest, fd.Name.Name, recv) {
+							out = append(out, Anchor{Pkg: pkg, File: file, Node: fd, Kind: "method", Name: fd.Name.Name, RecvType: recv})
+						}
 					}
-					recv := recvTypeName(fd, pkg.TypesInfo)
-					if matchName(rest, fd.Name.Name, recv) {
-						out = append(out, Anchor{Pkg: pkg, File: file, Node: fd, Kind: "method", Name: fd.Name.Name, RecvType: recv})
+					// 2) Interface method signatures (no body) — aligned with Java interface methods
+					if ts, ok := n.(*ast.TypeSpec); ok {
+						it, ok := ts.Type.(*ast.InterfaceType)
+						if !ok || it.Methods == nil {
+							return true
+						}
+						ifaceName := ts.Name.Name
+						for _, field := range it.Methods.List {
+							if field.Names == nil {
+								continue // embedded interface
+							}
+							if _, isFunc := field.Type.(*ast.FuncType); !isFunc {
+								continue
+							}
+							for _, id := range field.Names {
+								if matchName(rest, id.Name, ifaceName) || matchSimple(rest, id.Name) {
+									out = append(out, Anchor{
+										Pkg: pkg, File: file, Node: id, Kind: "method",
+										Name: id.Name, RecvType: ifaceName,
+									})
+								}
+							}
+						}
 					}
 				}
 				return true
