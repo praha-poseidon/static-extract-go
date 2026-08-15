@@ -12,6 +12,7 @@ type Fact = extract.Fact
 // Request is one extract invocation.
 type Request struct {
 	ProjectRoot    string
+	ProjectName    string // optional metadata; identity keys use importPath, not project
 	Patterns       []string
 	RuleSources    []string
 	Packages       []*packages.Package
@@ -22,6 +23,7 @@ type Request struct {
 func Run(req Request) ([]Fact, error) {
 	return extract.Run(extract.Request{
 		ProjectRoot:    req.ProjectRoot,
+		ProjectName:    req.ProjectName,
 		Patterns:       req.Patterns,
 		RuleSources:    req.RuleSources,
 		Packages:       req.Packages,
