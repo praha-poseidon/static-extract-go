@@ -11,14 +11,17 @@ import (
 )
 
 type Anchor struct {
-	Pkg      *packages.Package
-	File     *ast.File
-	Node     ast.Node
-	Kind     string
-	Name     string
-	RecvType string
-	CallArgs []ast.Expr
-	Fun      ast.Expr
+	Pkg           *packages.Package
+	File          *ast.File
+	Node          ast.Node
+	Kind          string
+	Name          string
+	RecvType      string // legacy call/declaration identity owner
+	ReceiverType  string // actual method receiver type; empty for package functions
+	CallOwner     string // method receiver type or selected package identifier
+	EnclosingType string // Go type containing the anchor, when any
+	CallArgs      []ast.Expr
+	Fun           ast.Expr
 }
 
 func FindAnchors(pkgs []*packages.Package, findAtoms []string) []Anchor {
@@ -33,6 +36,7 @@ func FindAnchors(pkgs []*packages.Package, findAtoms []string) []Anchor {
 			continue
 		}
 		for _, file := range pkg.Syntax {
+			enclosingByNode := indexEnclosingTypes(file, pkg.TypesInfo)
 			ast.Inspect(file, func(n ast.Node) bool {
 				switch kind {
 				case "call":
@@ -40,11 +44,13 @@ func FindAnchors(pkgs []*packages.Package, findAtoms []string) []Anchor {
 					if !ok {
 						return true
 					}
-					name, recv := callName(ce, pkg.TypesInfo)
-					if matchName(rest, name, recv) {
+					name, owner, receiverType := callIdentity(ce, pkg.TypesInfo)
+					if matchName(rest, name, owner) {
 						out = append(out, Anchor{
 							Pkg: pkg, File: file, Node: ce, Kind: "call",
-							Name: name, RecvType: recv, CallArgs: ce.Args, Fun: ce.Fun,
+							Name: name, RecvType: owner, ReceiverType: receiverType,
+							CallOwner: owner, EnclosingType: enclosingByNode[ce],
+							CallArgs: ce.Args, Fun: ce.Fun,
 						})
 					}
 				case "func":
@@ -60,7 +66,10 @@ func FindAnchors(pkgs []*packages.Package, findAtoms []string) []Anchor {
 					if fd, ok := n.(*ast.FuncDecl); ok && fd.Recv != nil {
 						recv := recvTypeName(fd, pkg.TypesInfo)
 						if matchName(rest, fd.Name.Name, recv) {
-							out = append(out, Anchor{Pkg: pkg, File: file, Node: fd, Kind: "method", Name: fd.Name.Name, RecvType: recv})
+							out = append(out, Anchor{
+								Pkg: pkg, File: file, Node: fd, Kind: "method", Name: fd.Name.Name,
+								RecvType: recv, ReceiverType: recv, EnclosingType: recv,
+							})
 						}
 					}
 					// 2) Interface method signatures (no body) — aligned with Java interface methods
@@ -82,6 +91,7 @@ func FindAnchors(pkgs []*packages.Package, findAtoms []string) []Anchor {
 									out = append(out, Anchor{
 										Pkg: pkg, File: file, Node: id, Kind: "method",
 										Name: id.Name, RecvType: ifaceName,
+										ReceiverType: ifaceName, EnclosingType: ifaceName,
 									})
 								}
 							}
@@ -115,11 +125,21 @@ func matchName(rest []string, name, recv string) bool {
 	if len(rest) == 0 {
 		return true
 	}
-	joined := strings.ReplaceAll(strings.Join(rest, "."), " ", "")
+	joined := strings.ReplaceAll(strings.Join(rest, ""), " ", "")
 	if strings.HasPrefix(joined, "[") && strings.HasSuffix(joined, "]") {
 		inner := strings.Trim(joined, "[]")
 		for _, part := range strings.Split(inner, ",") {
 			if callMatches(strings.TrimSpace(part), name, recv) {
+				return true
+			}
+		}
+		return false
+	}
+	if listStart := strings.Index(joined, ".["); listStart > 0 && strings.HasSuffix(joined, "]") {
+		owner := joined[:listStart]
+		methods := joined[listStart+2 : len(joined)-1]
+		for _, method := range strings.Split(methods, ",") {
+			if callMatches(owner+"."+strings.TrimSpace(method), name, recv) {
 				return true
 			}
 		}
@@ -157,33 +177,68 @@ func baseIdent(recv string) string {
 	return recv
 }
 
-func callName(ce *ast.CallExpr, info *types.Info) (name, recv string) {
+func callIdentity(ce *ast.CallExpr, info *types.Info) (name, owner, receiverType string) {
 	switch f := ce.Fun.(type) {
 	case *ast.Ident:
-		return f.Name, ""
+		return f.Name, "", ""
 	case *ast.SelectorExpr:
 		name = f.Sel.Name
 		if info != nil {
 			if sel := info.Selections[f]; sel != nil {
 				if t := sel.Recv(); t != nil {
-					recv = types.TypeString(t, (*types.Package).Name)
+					receiverType = types.TypeString(t, (*types.Package).Name)
+					owner = receiverType
 				}
 			}
-			if recv == "" {
+			if owner == "" {
+				if id, ok := f.X.(*ast.Ident); ok {
+					if _, ok := info.Uses[id].(*types.PkgName); ok {
+						// Keep the source-level package identifier for compatibility with
+						// existing `find call pkg.Func` rules (including import aliases).
+						owner = id.Name
+					}
+				}
+			}
+			if owner == "" {
 				if tv, ok := info.Types[f.X]; ok && tv.Type != nil {
-					recv = types.TypeString(tv.Type, (*types.Package).Name)
+					receiverType = types.TypeString(tv.Type, (*types.Package).Name)
+					owner = receiverType
 				}
 			}
 		}
-		if recv == "" {
+		if owner == "" {
 			if id, ok := f.X.(*ast.Ident); ok {
-				recv = id.Name
+				owner = id.Name
 			}
 		}
-		return name, strings.TrimPrefix(recv, "*")
+		return name, normalizeType(owner), normalizeType(receiverType)
 	default:
-		return "", ""
+		return "", "", ""
 	}
+}
+
+func indexEnclosingTypes(file *ast.File, info *types.Info) map[ast.Node]string {
+	byNode := map[ast.Node]string{}
+	var current string
+	var parents []string
+	ast.Inspect(file, func(n ast.Node) bool {
+		if n == nil {
+			current = parents[len(parents)-1]
+			parents = parents[:len(parents)-1]
+			return true
+		}
+		parents = append(parents, current)
+		if fd, ok := n.(*ast.FuncDecl); ok && fd.Recv != nil {
+			current = normalizeType(recvTypeName(fd, info))
+		}
+		byNode[n] = current
+		return true
+	})
+	return byNode
+}
+
+func normalizeType(value string) string {
+	return strings.TrimPrefix(strings.TrimSpace(value), "*")
 }
 
 func recvTypeName(fd *ast.FuncDecl, info *types.Info) string {

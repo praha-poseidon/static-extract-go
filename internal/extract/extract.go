@@ -3,7 +3,6 @@ package extract
 import (
 	"fmt"
 	"path/filepath"
-	"strings"
 
 	"github.com/praha-poseidon/static-extract-go/internal/ast"
 	"github.com/praha-poseidon/static-extract-go/internal/find"
@@ -67,8 +66,22 @@ func Run(req Request) ([]Fact, error) {
 	uriIndexByKey := map[string]int{}
 	var facts []Fact
 	for _, rule := range rules {
+		if err := validateFilters(rule.Where, rule.When); err != nil {
+			return nil, fmt.Errorf("rule %q: %w", rule.Name, err)
+		}
 		for _, a := range find.FindAnchors(pkgs, rule.Find) {
-			if !matchWhen(a, rule.When) {
+			whereMatches, err := matchWhere(a, rule.Where)
+			if err != nil {
+				return nil, fmt.Errorf("rule %q: %w", rule.Name, err)
+			}
+			if !whereMatches {
+				continue
+			}
+			whenMatches, err := matchWhen(a, rule.When)
+			if err != nil {
+				return nil, fmt.Errorf("rule %q: %w", rule.Name, err)
+			}
+			if !whenMatches {
 				continue
 			}
 			fields := evalBuild(rule, a)
@@ -141,33 +154,6 @@ func Run(req Request) ([]Fact, error) {
 		}
 	}
 	return facts, nil
-}
-
-func matchWhen(a find.Anchor, whens [][]string) bool {
-	for _, w := range whens {
-		if len(w) == 0 {
-			continue
-		}
-		joined := strings.Join(w, " ")
-		if strings.Contains(joined, "receiver") && strings.Contains(joined, "type") {
-			want := w[len(w)-1]
-			if a.RecvType != want && !strings.HasSuffix(a.RecvType, "."+want) && base(a.RecvType) != want {
-				return false
-			}
-			continue
-		}
-		if len(w) >= 2 && w[0] == "name" && a.Name != w[1] {
-			return false
-		}
-	}
-	return true
-}
-
-func base(s string) string {
-	if i := strings.LastIndex(s, "."); i >= 0 {
-		return s[i+1:]
-	}
-	return s
 }
 
 // evalBuild / evalSource → eval.go
