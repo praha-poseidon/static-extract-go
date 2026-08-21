@@ -11,12 +11,12 @@ import (
 	"github.com/praha-poseidon/static-extract-go/internal/ser"
 )
 
-func evalBuild(rule *ser.Rule, a find.Anchor) map[string]string {
+func evalBuild(rule *ser.Rule, a find.Anchor, methodDictValue string) map[string]string {
 	lets := map[string]string{}
 	for _, let := range rule.Lets {
 		val := ""
 		for _, src := range let.Sources {
-			val = evalSource(a, src)
+			val = evalSource(a, src, methodDictValue)
 			if val != "" {
 				break
 			}
@@ -322,11 +322,19 @@ func unquote(s string) string {
 }
 
 // evalSource interprets from … take … with chain / receiver resolve def / argument.
-func evalSource(a find.Anchor, src ser.Source) string {
+func evalSource(a find.Anchor, src ser.Source, methodDictValue string) string {
 	from := src.From
 	take := src.Take
 	if len(from) == 0 {
 		return ""
+	}
+
+	// A method value is deliberately not read from source text.  It is the
+	// identity-dictionary value for the current enclosing declaration.  This
+	// keeps annotation/call/declaration rules on the same let -> build path:
+	// only the value provider differs.
+	if from[0] == "method" && len(take) > 0 && take[0] == "value" {
+		return methodDictValue
 	}
 
 	// Declaration anchors (class/interface methods, package funcs) — parity with Java find method

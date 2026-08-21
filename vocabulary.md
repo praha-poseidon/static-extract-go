@@ -104,5 +104,11 @@ build {
 ## Notes
 
 - No built-in framework rules. Pass SER via `--rule` / `ruleSources`.
+- `from method take value` reads the current function/method key from the rule's
+  embedded `dict`. Keys are `import/path.Function()` or
+  `import/path.Owner.Method()`.
+- A declaration anchor fans out contiguous entries `key`, `key.1`, `key.2`, …
+  into separate facts. A miss continues to the next `from` or `fallback`.
+- `build { other: ... }` is preserved as endpoint metadata by the graph parser.
 - `resolve def` is framework-agnostic def-use (same-file, lexical previous assign).
 - Nested groups require multiple hops or nested SER; v1 one `resolve def` is one hop.

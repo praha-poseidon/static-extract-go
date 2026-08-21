@@ -203,3 +203,120 @@ func init() {
 		t.Fatalf("expected second call keep SER, facts=%#v", facts)
 	}
 }
+
+func TestMethodTakeValueReadsEmbeddedIdentityDict(t *testing.T) {
+	dir := t.TempDir()
+	writeGoModMain(t, dir, `package main
+type Server struct{}
+func (Server) Serve() {}
+`)
+	rule := `
+rule "Configured method endpoint"
+endpoint HTTP inbound
+find method Server.Serve
+let path =
+  from method take value
+let handler =
+  from method take name
+build {
+  endpointType: "HTTP"
+  direction: "inbound"
+  method: "GET"
+  path: path
+  handler: handler
+}
+dict {
+  example.com/t.Server.Serve() = /configured/serve
+  example.com/t.Server.Serve().1 = /configured/serve-alias
+  example.com/t.Server.Serve().2 = /configured/serve-v2
+}
+`
+	facts, err := Run(Request{
+		ProjectRoot: dir,
+		Patterns:    []string{"./..."},
+		RuleSources: []string{rule},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(facts) != 3 {
+		t.Fatalf("facts=%#v", facts)
+	}
+	wantPaths := []string{"/configured/serve", "/configured/serve-alias", "/configured/serve-v2"}
+	for index, fact := range facts {
+		if got := fact.Fields["path"]; got != wantPaths[index] || fact.Fields["parseLevel"] != "config" {
+			t.Fatalf("fact[%d]=%v", index, fact.Fields)
+		}
+	}
+	if got := facts[2].Fields["handler"]; got != "Serve" {
+		t.Fatalf("handler=%q", got)
+	}
+}
+
+func TestMethodTakeValueUsesIndexedDictKeysForMultipleHits(t *testing.T) {
+	dir := t.TempDir()
+	writeGoModMain(t, dir, `package main
+func bind(string) {}
+func routes() {
+	bind("ignored-one")
+	bind("ignored-two")
+}
+`)
+	rule := `
+rule "Configured routes"
+endpoint HTTP inbound
+find call bind
+let path =
+  from method take value
+build {
+  endpointType: "HTTP"
+  direction: "inbound"
+  method: "GET"
+  path: path
+}
+dict {
+  example.com/t.routes() = /first
+  example.com/t.routes().1 = /second
+}
+`
+	facts, err := Run(Request{
+		ProjectRoot: dir,
+		Patterns:    []string{"./..."},
+		RuleSources: []string{rule},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(facts) != 2 || facts[0].Fields["path"] != "/first" || facts[1].Fields["path"] != "/second" {
+		t.Fatalf("facts=%#v", facts)
+	}
+}
+
+func TestMethodTakeValueMissContinuesToFallbackSource(t *testing.T) {
+	dir := t.TempDir()
+	writeGoModMain(t, dir, "package main\ntype Server struct{}\nfunc (Server) Serve() {}\n")
+	rule := `
+rule "Configured method fallback"
+endpoint HTTP inbound
+find method Server.Serve
+let path =
+  from method take value
+  from literal "/fallback" take value
+build {
+  endpointType: "HTTP"
+  direction: "inbound"
+  method: "GET"
+  path: path
+}
+dict {
+  example.com/t.Server.Other() = /other
+}
+`
+	facts, err := Run(Request{ProjectRoot: dir, Patterns: []string{"./..."}, RuleSources: []string{rule}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(facts) != 1 || facts[0].Fields["path"] != "/fallback" || facts[0].Fields["parseLevel"] != "" {
+		t.Fatalf("facts=%#v", facts)
+	}
+}

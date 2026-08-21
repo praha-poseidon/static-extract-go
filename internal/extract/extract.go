@@ -3,6 +3,7 @@ package extract
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/praha-poseidon/static-extract-go/internal/ast"
 	"github.com/praha-poseidon/static-extract-go/internal/find"
@@ -84,7 +85,6 @@ func Run(req Request) ([]Fact, error) {
 			if !whenMatches {
 				continue
 			}
-			fields := evalBuild(rule, a)
 			pos := a.Pkg.Fset.Position(a.Node.Pos())
 			end := a.Pkg.Fset.Position(a.Node.End())
 			abs := pos.Filename
@@ -98,15 +98,6 @@ func Run(req Request) ([]Fact, error) {
 				if r, err := filepath.Rel(root, abs); err == nil {
 					rel = r
 				}
-			}
-			classifiers := map[string]string{}
-			if rule.EndpointType != "" {
-				classifiers["category"] = rule.EndpointType
-				classifiers["direction"] = rule.EndpointDirection
-			}
-			// Default direction into fields when SER build omitted it.
-			if fields["direction"] == "" && classifiers["direction"] != "" {
-				fields["direction"] = classifiers["direction"]
 			}
 			enclosing := enclosingFuncName(a.File, a.Node.Pos())
 			// Declaration anchors: identity encloses the declared method itself (Java-like).
@@ -129,6 +120,23 @@ func Run(req Request) ([]Fact, error) {
 					importPath = a.Pkg.Name
 				}
 			}
+			methodDictValues := []string{""}
+			directMethodDict := false
+			if len(rule.IdentityDict) > 0 {
+				recv, fn := splitRecvFunc(enclosing)
+				if (a.Kind == "method" || a.Kind == "func") && usesMethodTakeValue(rule) {
+					directMethodDict = true
+					if configured := methodDictSequence(rule.IdentityDict, MethodKey(importPath, recv, fn, 0)); len(configured) > 0 {
+						methodDictValues = configured
+					}
+				} else {
+					// Peek at the same per-method index consumed below by
+					// ApplyPathDictWithRule so `take value` and the compatibility
+					// post-build override resolve the identical .1/.2 entry.
+					index := uriIndexByKey[importPath+"#"+enclosing]
+					methodDictValues[0] = rule.IdentityDict[MethodKey(importPath, recv, fn, index)]
+				}
+			}
 			ext := req.ExternalValues
 			if len(rule.IdentityDict) > 0 {
 				// SER-embedded dict takes precedence for this rule
@@ -138,22 +146,65 @@ func Run(req Request) ([]Fact, error) {
 				}
 				ext = map[string]map[string][]string{IdentityNS: table}
 			}
-			ApplyPathDictWithRule(fields, classifiers, projectName, importPath, enclosing, callLabel, rule.Name, ext, uriIndexByKey)
+			for _, methodDictValue := range methodDictValues {
+				classifiers := map[string]string{}
+				if rule.EndpointType != "" {
+					classifiers["category"] = rule.EndpointType
+					classifiers["direction"] = rule.EndpointDirection
+				}
+				fields := evalBuild(rule, a, methodDictValue)
+				// Default direction into fields when SER build omitted it.
+				if fields["direction"] == "" && classifiers["direction"] != "" {
+					fields["direction"] = classifiers["direction"]
+				}
+				if directMethodDict && methodDictValue != "" {
+					fields["parseLevel"] = "config"
+				} else {
+					ApplyPathDictWithRule(fields, classifiers, projectName, importPath, enclosing, callLabel, rule.Name, ext, uriIndexByKey)
+				}
 
-			facts = append(facts, Fact{
-				Rule:             rule.Name,
-				FactType:         rule.FactType,
-				Classifiers:      classifiers,
-				Fields:           fields,
-				ProjectFilePath:  filepath.ToSlash(rel),
-				AbsoluteFilePath: abs,
-				StartLine:        pos.Line,
-				EndLine:          end.Line,
-				EnclosingSymbol:  enclosing,
-			})
+				facts = append(facts, Fact{
+					Rule:             rule.Name,
+					FactType:         rule.FactType,
+					Classifiers:      classifiers,
+					Fields:           fields,
+					ProjectFilePath:  filepath.ToSlash(rel),
+					AbsoluteFilePath: abs,
+					StartLine:        pos.Line,
+					EndLine:          end.Line,
+					EnclosingSymbol:  enclosing,
+				})
+			}
 		}
 	}
 	return facts, nil
+}
+
+func usesMethodTakeValue(rule *ser.Rule) bool {
+	for _, let := range rule.Lets {
+		for _, source := range let.Sources {
+			if len(source.From) > 0 && source.From[0] == "method" && len(source.Take) > 0 && source.Take[0] == "value" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func methodDictSequence(dict map[string]string, base string) []string {
+	first := strings.TrimSpace(dict[base])
+	if first == "" {
+		return nil
+	}
+	values := []string{first}
+	for index := 1; ; index++ {
+		value := strings.TrimSpace(dict[fmt.Sprintf("%s.%d", base, index)])
+		if value == "" {
+			break
+		}
+		values = append(values, value)
+	}
+	return values
 }
 
 // evalBuild / evalSource → eval.go

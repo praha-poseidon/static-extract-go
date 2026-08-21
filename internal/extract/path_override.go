@@ -30,6 +30,11 @@ func MethodKey(importPath, recvType, funcName string, siteIndex int) string {
 	importPath = blankToUnknown(importPath)
 	funcName = blankToUnknown(funcName)
 	recvType = strings.TrimSpace(strings.TrimPrefix(recvType, "*"))
+	// A declaration receiver is local to its package. go/types may render it as
+	// "pkg.Type"; the package/import path is already the key prefix.
+	if dot := strings.LastIndex(recvType, "."); dot >= 0 {
+		recvType = recvType[dot+1:]
+	}
 	var base string
 	if recvType == "" {
 		base = fmt.Sprintf("%s.%s()", importPath, funcName)
