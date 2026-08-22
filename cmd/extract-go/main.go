@@ -36,11 +36,11 @@ func main() {
 }
 
 func usage() {
-	fmt.Print(`Usage: static-extract-go <command> [options]
+	fmt.Print(`Usage: extract-go <command> [options]
 
 Commands: init | try | run
 
-Shared extraction options (aligned with static-extract-java CLI):
+Shared extraction options (aligned with extract-java CLI):
   --project <dir>          Project root (required for try/run).
   --project-name <name>    Optional project name (identity keys use importPath.Func()).
   --source <path>          Source pattern/dir; repeatable; default ./{...}
