@@ -481,49 +481,71 @@ func parseTrace(lines []string, i int) ([]TraceEntry, int, error) {
 
 // parseDict: dict { key = value ... }
 func parseDict(lines []string, i int) (map[string]string, int, error) {
-	line := strings.TrimSpace(lines[i])
-	if !strings.Contains(line, "{") {
+	line := lines[i]
+	open := strings.Index(line, "{")
+	if open < 0 {
 		return nil, i, fmt.Errorf("ser: dict expects { at line %d", i+1)
 	}
 	out := map[string]string{}
-	// same-line dict { a = b }
-	if idx := strings.Index(line, "{"); idx >= 0 {
-		rest := strings.TrimSpace(line[idx+1:])
-		if strings.Contains(rest, "}") {
-			inner := strings.TrimSpace(rest[:strings.Index(rest, "}")])
-			if inner != "" {
-				if err := parseDictLine(inner, out); err != nil {
-					return nil, i, err
-				}
-			}
-			return out, i + 1, nil
-		}
-	}
-	i++
-	for i < len(lines) {
-		line := strings.TrimSpace(lines[i])
-		if line == "" || strings.HasPrefix(line, "#") {
-			i++
+	depth := 1
+	quote := byte(0)
+	escaped := false
+	for row := i; row < len(lines); row++ {
+		current := lines[row]
+		start := 0
+		if row == i {
+			start = open + 1
+		} else if trimmed := strings.TrimSpace(current); trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-		if strings.HasPrefix(line, "}") {
-			i++
-			return out, i, nil
-		}
-		if idx := strings.Index(line, "}"); idx >= 0 {
-			fieldPart := strings.TrimSpace(line[:idx])
-			if fieldPart != "" {
-				if err := parseDictLine(fieldPart, out); err != nil {
-					return nil, i, err
+		var content strings.Builder
+		for column := start; column < len(current); column++ {
+			ch := current[column]
+			if quote != 0 {
+				content.WriteByte(ch)
+				if escaped {
+					escaped = false
+				} else if ch == '\\' {
+					escaped = true
+				} else if ch == quote {
+					quote = 0
 				}
+				continue
 			}
-			i++
-			return out, i, nil
+			if ch == '\'' || ch == '"' {
+				quote = ch
+				content.WriteByte(ch)
+				continue
+			}
+			if ch == '{' {
+				depth++
+				content.WriteByte(ch)
+				continue
+			}
+			if ch == '}' {
+				depth--
+				if depth == 0 {
+					if field := strings.TrimSpace(content.String()); field != "" {
+						if err := parseDictLine(field, out); err != nil {
+							return nil, row, err
+						}
+					}
+					trailing := strings.TrimSpace(current[column+1:])
+					if trailing != "" && !strings.HasPrefix(trailing, "#") {
+						return nil, row, fmt.Errorf("ser: unexpected content after dict at line %d", row+1)
+					}
+					return out, row + 1, nil
+				}
+				content.WriteByte(ch)
+				continue
+			}
+			content.WriteByte(ch)
 		}
-		if err := parseDictLine(line, out); err != nil {
-			return nil, i, err
+		if field := strings.TrimSpace(content.String()); field != "" && !strings.HasPrefix(field, "#") {
+			if err := parseDictLine(field, out); err != nil {
+				return nil, row, err
+			}
 		}
-		i++
 	}
 	return nil, i, fmt.Errorf("ser: unclosed dict")
 }

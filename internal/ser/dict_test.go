@@ -13,13 +13,13 @@ build {
   path: path
 }
 dict {
-  example.com/t.load() = /v1/demo
+  example.com/t.load() = /v1/space/{spaceId}/users/{id}
 }
 `)
   if err != nil {
     t.Fatal(err)
   }
-  if r.IdentityDict["example.com/t.load()"] != "/v1/demo" {
+  if r.IdentityDict["example.com/t.load()"] != "/v1/space/{spaceId}/users/{id}" {
     t.Fatalf("%#v", r.IdentityDict)
   }
 }

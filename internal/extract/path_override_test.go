@@ -24,13 +24,37 @@ func TestMethodKeyNoProject(t *testing.T) {
 	}
 }
 
+func TestStaticPathNormalizationPipeline(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		step  string
+		want  string
+	}{
+		{"slash", "//api///users/{name}", "normalize slash", "/api/users/{name}"},
+		{"extractPath", "https://example.com//api/users/{name}?page=1#top", "normalize extractPath", "/api/users/{name}"},
+		{"pathVariable", "/users/{name}/:id/<slug>/[item]", "normalize pathVariable", "/users/{param}/{param}/{param}/{param}"},
+		{"httpPath", "https://example.com//api/users/{name}/?page=1#top", "normalize httpPath", "/api/users/{param}"},
+		{"djangoNamed", `^thumbnail/(?P<path>[.0-9A-Za-z_/-]+)/(?P<size>\d+)/$`, "normalize httpPath", "/thumbnail/{param}/{param}"},
+		{"djangoOptional", `^api/(?P<id>\d+)(?:/(?P<slug>[-\w]+))?/$`, "normalize httpPath", "/api/{param}/{param}"},
+		{"realQuery", "/users/:userId?view=full#ignored", "normalize httpPath", "/users/{param}"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := applyPipelineStep(tt.input, tt.step); got != tt.want {
+				t.Fatalf("%s(%q)=%q, want %q", tt.step, tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestApplyPathDictHitMiss(t *testing.T) {
 	key := "example.com/t.fetch()"
 	counter := map[string]int{}
 	fields := map[string]string{"direction": "outbound", "path": "buildUrl()"}
 	classifiers := map[string]string{"category": "HTTP", "direction": "outbound"}
 	external := map[string]map[string][]string{
-		IdentityNS: {key: {"v1/items"}},
+		IdentityNS: {key: {"/v1/items"}},
 	}
 	gotKey, hit := ApplyPathDict(fields, classifiers, "demo", "example.com/t", "fetch", "Get", external, counter)
 	if !hit || gotKey != key {
@@ -226,8 +250,8 @@ build {
   handler: handler
 }
 dict {
-  example.com/t.Server.Serve() = /configured/serve
-  example.com/t.Server.Serve().1 = /configured/serve-alias
+  example.com/t.Server.Serve() = /configured/serve/{requestId}
+  example.com/t.Server.Serve().1 = /configured/serve-alias/{aliasId}
   example.com/t.Server.Serve().2 = /configured/serve-v2
 }
 `
@@ -242,7 +266,7 @@ dict {
 	if len(facts) != 3 {
 		t.Fatalf("facts=%#v", facts)
 	}
-	wantPaths := []string{"/configured/serve", "/configured/serve-alias", "/configured/serve-v2"}
+	wantPaths := []string{"/configured/serve/{requestId}", "/configured/serve-alias/{aliasId}", "/configured/serve-v2"}
 	for index, fact := range facts {
 		if got := fact.Fields["path"]; got != wantPaths[index] || fact.Fields["parseLevel"] != "config" {
 			t.Fatalf("fact[%d]=%v", index, fact.Fields)

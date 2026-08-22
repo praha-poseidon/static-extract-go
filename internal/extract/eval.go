@@ -2,9 +2,9 @@ package extract
 
 import (
 	"go/ast"
+	"regexp"
 	"strconv"
 	"strings"
-	"unicode"
 
 	"github.com/praha-poseidon/static-extract-go/internal/find"
 	"github.com/praha-poseidon/static-extract-go/internal/resolve"
@@ -173,6 +173,8 @@ func applyPipelineStep(val, step string) string {
 			return normalizePathVariable(val)
 		case "extractPath":
 			return extractPath(val)
+		case "httpPath", "routePath":
+			return normalizeHTTPPath(val)
 		case "upper":
 			return strings.ToUpper(val)
 		case "lower":
@@ -273,23 +275,22 @@ func normalizeSlash(s string) string {
 }
 
 func normalizePathVariable(s string) string {
-	// :id -> {id} lightly
-	var b strings.Builder
-	for i := 0; i < len(s); i++ {
-		if s[i] == ':' && i+1 < len(s) && (unicode.IsLetter(rune(s[i+1])) || s[i+1] == '_') {
-			j := i + 1
-			for j < len(s) && (unicode.IsLetter(rune(s[j])) || unicode.IsDigit(rune(s[j])) || s[j] == '_') {
-				j++
-			}
-			b.WriteByte('{')
-			b.WriteString(s[i+1 : j])
-			b.WriteByte('}')
-			i = j - 1
-			continue
-		}
-		b.WriteByte(s[i])
+	s = regexp.MustCompile(`\(\?P<[^>]+>[^)]*\)`).ReplaceAllString(s, "{param}")
+	s = regexp.MustCompile(`\(\?:/\{param\}/?\??\)\?`).ReplaceAllString(s, "/{param}")
+	s = regexp.MustCompile(`\(\?:\{param\}/?\??\)\?`).ReplaceAllString(s, "{param}")
+	replacers := []*regexp.Regexp{
+		regexp.MustCompile(`:[A-Za-z_$][\w$]*`),
+		regexp.MustCompile(`\$\{[^}]+\}`),
+		regexp.MustCompile(`\{[^}/]+\}`),
+		regexp.MustCompile(`<(?:(?:[^:>]+):)?[^>]+>`),
+		regexp.MustCompile(`\[\[\.{3}[^\]]+\]\]`),
+		regexp.MustCompile(`\[\.{3}[^\]]+\]`),
+		regexp.MustCompile(`\[[^\]]+\]`),
 	}
-	return b.String()
+	for _, pattern := range replacers {
+		s = pattern.ReplaceAllString(s, "{param}")
+	}
+	return s
 }
 
 func extractPath(s string) string {
@@ -297,15 +298,44 @@ func extractPath(s string) string {
 	if i := strings.Index(s, "://"); i >= 0 {
 		rest := s[i+3:]
 		if j := strings.Index(rest, "/"); j >= 0 {
-			return rest[j:]
+			s = rest[j:]
+		} else {
+			s = "/"
 		}
-		return "/"
 	}
-	if strings.HasPrefix(s, "lb://") {
-		rest := s[len("lb://"):]
-		if j := strings.Index(rest, "/"); j >= 0 {
-			return rest[j:]
+	if i := strings.IndexByte(s, '#'); i >= 0 {
+		s = s[:i]
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] != '?' {
+			continue
 		}
+		previousIsGroupEnd := i > 0 && s[i-1] == ')'
+		nextIsRegexOperator := i+1 < len(s) && strings.ContainsRune("P:=!<", rune(s[i+1]))
+		if !previousIsGroupEnd && !nextIsRegexOperator {
+			s = s[:i]
+			break
+		}
+	}
+	return normalizeSlash(s)
+}
+
+func normalizeHTTPPath(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "^")
+	s = strings.TrimSuffix(s, "$")
+	s = strings.ReplaceAll(s, `\.`, ".")
+	s = normalizePathVariable(extractPath(s))
+	leadingVariables := regexp.MustCompile(`^(?:\{param\})+`).FindString(s)
+	rest := strings.TrimPrefix(s, leadingVariables)
+	if leadingVariables != "" && len(rest) > 1 && rest[0] == '/' && rest[1] != '{' {
+		s = rest
+	}
+	if s != "" && !strings.HasPrefix(s, "/") {
+		s = "/" + s
+	}
+	if len(s) > 1 {
+		s = strings.TrimSuffix(s, "/")
 	}
 	return s
 }

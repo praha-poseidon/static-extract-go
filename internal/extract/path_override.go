@@ -189,17 +189,6 @@ func setIdentityField(fields, classifiers map[string]string, override string) {
 		fields["tableName"] = v
 		fields["table"] = v
 	default:
-		if !strings.HasPrefix(v, "/") &&
-			!strings.HasPrefix(v, "http://") &&
-			!strings.HasPrefix(v, "https://") &&
-			!strings.HasPrefix(v, "lb:") &&
-			!strings.Contains(v, ":") {
-			if strings.HasPrefix(v, "api/") || !strings.Contains(v, " ") {
-				v = normalizeUserPath(v)
-			}
-		} else {
-			v = normalizeUserPath(v)
-		}
 		fields["path"] = v
 	}
 }
@@ -232,20 +221,6 @@ func CallSiteLabel(name, recv string) string {
 	}
 	recv = strings.TrimPrefix(recv, "*")
 	return recv + "." + name
-}
-
-func normalizeUserPath(path string) string {
-	p := strings.TrimSpace(path)
-	if p == "" {
-		return p
-	}
-	if !strings.HasPrefix(p, "/") &&
-		!strings.HasPrefix(p, "http://") &&
-		!strings.HasPrefix(p, "https://") &&
-		!strings.HasPrefix(p, "lb:") {
-		return "/" + p
-	}
-	return p
 }
 
 func firstNonBlank(values []string) string {
